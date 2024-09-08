@@ -11,168 +11,209 @@
 
 #define QP 21 // Used when CQP
 #define PRESET "superfast"
-#define VBV 30   // When VBV is 1, the actual frame size should not exceed the target
-
-#define CHANGE 1 // Change bitrate in half way
+#define VBV 1   // When VBV is 1, the actual frame size should not exceed the target
+#define INITIAL_BITRATE 3000
 
 using namespace std;
-int main() {
-    x264_param_t param_;
-    x264_param_default_preset(&param_, PRESET, "zerolatency");
 
-    param_.i_threads = 2;
-    param_.b_sliced_threads = 1;
-    param_.i_width = 1920;
-    param_.i_height = 1080;
-    param_.i_frame_total = 0;  
-    param_.i_keyint_max = 1500;
+void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_bitrate) {
+    x264_param_default_preset(&param, PRESET, "zerolatency");
+
+    /* Configure non-default params */
+    param.i_threads = 2;
+    param.b_sliced_threads = 1;
+    param.i_width = width;
+    param.i_height = height;
+    param.i_frame_total = 0;
+    param.i_keyint_max = 1500;
+    param.i_bitdepth = 8;
+    param.i_csp = X264_CSP_I420;
+    param.b_repeat_headers = 1;
+    // param.b_annexb = 1;  // for start code 0,0,0,1
 
     // Rate Control Method
     // // CQP
-    // param_.rc.i_rc_method = X264_RC_CQP;
-    // param_.rc.i_qp_constant = QP;
+    // param.rc.i_rc_method = X264_RC_CQP;
+    // param.rc.i_qp_constant = QP;
 
     // // CRF
-    // param_.rc.i_rc_method = X264_RC_CRF;
-    // param_.rc.f_rf_constant = 25;
+    // param.rc.i_rc_method = X264_RC_CRF;
+    // param.rc.f_rf_constant = 25;
 
     // ABR
-    param_.rc.i_rc_method = X264_RC_ABR;
-    int br = 3000;
-    param_.rc.i_bitrate = br;  
+    param.rc.i_rc_method = X264_RC_ABR;
+    param.rc.i_bitrate = initial_bitrate;
 
-    param_.rc.i_vbv_max_bitrate = br; //  3000
-    param_.rc.i_vbv_buffer_size = br / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
-    // param_.rc.b_filler = 1;
+    param.rc.i_vbv_max_bitrate = initial_bitrate; //  3000
+    param.rc.i_vbv_buffer_size = initial_bitrate / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
+    // param.rc.b_filler = 1;
 
+    // param.i_bframe = 0;
+    // param.b_open_gop = 0;
+    // param.i_bframe_pyramid = 0;
+    // param.i_bframe_adaptive = X264_B_ADAPT_TRELLIS;
 
-
-    // param_.i_bframe = 0;
-    // param_.b_open_gop = 0;
-    // param_.i_bframe_pyramid = 0;
-    // param_.i_bframe_adaptive = X264_B_ADAPT_TRELLIS;
-
-    // param_.i_log_level = X264_LOG_DEBUG;
-    param_.i_fps_den = 1;
-    param_.i_fps_num = 30;
-
-    // param_.b_annexb = 1;  // for start code 0,0,0,1
-    param_.i_csp = X264_CSP_I420;
+    // param.i_log_level = X264_LOG_DEBUG;
+    param.i_fps_den = 1;
+    param.i_fps_num = 30;
 
     // param_.b_vfr_input = 0;
-    // param_.b_repeat_headers = 1;  // sps, pps
 
+    param.b_cabac = 1;  // 0 for CAVLC， 1 for higher complexity
+}
 
+struct bitrate_config {
+    int start_frame_index;
+    int bitrate;
+};
 
-    param_.b_cabac = 1;  // 0 for CAVLC， 1 for higher complexity
+void ReadBitrateConfig(FILE *bitrate_file, vector<bitrate_config> &bitrate_config_vec) {
+    bitrate_config config;
+    while (fscanf(bitrate_file, "%d, %d", &config.start_frame_index,
+                  &config.bitrate) != EOF) {
+        bitrate_config_vec.push_back(config);
+    }
+    cout << "Read " << bitrate_config_vec.size() << " bitrate config" << endl;
+    for (int i = 0; i < bitrate_config_vec.size(); i++) {
+        cout << "start_frame_index:" << bitrate_config_vec[i].start_frame_index << " bitrate:" << bitrate_config_vec[i].bitrate << endl;
+    }
+}
 
-    x264_picture_t pic_;
-    x264_picture_t pic_out_;
-    x264_t *encoder_;
-    x264_nal_t *nal_t_;
-    // x264_param_t param_;
+void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
+    cout << "Reconfig to bitrate:" << bitrate << endl;
+    param.rc.i_bitrate = bitrate;
+    param.rc.i_vbv_max_bitrate = bitrate; //  3000
+    param.rc.i_vbv_buffer_size = bitrate / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
 
-    int ret_val = x264_picture_alloc(&pic_, param_.i_csp, param_.i_width, param_.i_height);
+    // param_.analyse.i_trellis = 1;
+    // param_.analyse.inter = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8
+    //             | X264_ANALYSE_PSUB16x16 | X264_ANALYSE_BSUB16x16;
+    // param_.analyse.i_subpel_refine = 4;           
+    // param_.analyse.i_me_method = X264_ME_HEX;  
+    // param_.i_frame_reference = 2;
+    x264_encoder_reconfig(encoder, &param);
+}
 
+int WriteNALToFile(FILE *file_out, x264_nal_t *nal, int i_frame_size) {
+    if (i_frame_size > 0) {
+        if (!fwrite(nal->p_payload, i_frame_size, 1, file_out)) {
+            cout << "fwrite failed" << endl;
+            return -1;
+        }
+    } else if (i_frame_size < 0) {
+        return -1;
+    }
+    return 0;
+}
 
-    encoder_ = x264_encoder_open(&param_);
+struct Statistics {
+    int current_bitrate;
+    int frame_size;
+    int duration;
+};
 
+void OutputStatistics(vector<Statistics> &statistics_result) {
+    // write the frame size to file
+    FILE *statistics_file = fopen("statistics_result.csv", "w");
+    fprintf(statistics_file, "current_bitrate,frame_size,duration\n");
+    for (int i = 0; i < statistics_result.size(); i++) {
+        fprintf(statistics_file, "%d,%d,%d\n", statistics_result[i].current_bitrate,
+                statistics_result[i].frame_size, statistics_result[i].duration);
+    }
+    fclose(statistics_file);
+}
 
-    FILE *file = fopen("/mnt/md3/xiangjie/youtubevideos/evaluation_video/bathsong_coded.yuv", "rb");
-    FILE *file_out = fopen("coded.h264", "wb");
+int main() {
+    x264_param_t param;
+    x264_t *encoder;
+    x264_picture_t pic;
+    x264_picture_t pic_out;
+    int i_frame = 0;
+    int i_frame_size;
+    x264_nal_t *nal;
+    int i_nal;
+    int initial_bitrate = INITIAL_BITRATE;
 
+    int width = 1280;
+    int height = 720;
 
-    int frame_size = param_.i_width * param_.i_height * 3 / 2;
-    uint8_t *yuv = new uint8_t[frame_size];
+    InitEncodeParam(param, width, height, initial_bitrate);
 
-    int frame_num = 0;
-    vector<int> frame_size_vec;
-    vector<int> duration_vec;
-    vector<int> diff_vec;
-    vector<int> avg_diff_vec;
-    // while (fread(yuv, 1, frame_size, file) == frame_size) {
+    FILE *input_yuv_file = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\1280x720.yuv", "rb");
+    FILE *encoded_file_out = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\result.mkv", "wb");
+    FILE *bitrate_file = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\bitrate_config.txt", "rb");
+    if (!input_yuv_file || !encoded_file_out || !bitrate_file) {
+        cout << "fopen failed" << endl;
+        return -1;
+    }
 
-    // temp YUV file
-    FILE *temp_yuv = fopen("/mnt/md3/xiangjie/temp.yuv", "wb");
+    vector<bitrate_config> bitrate_config_vec;
+    ReadBitrateConfig(bitrate_file, bitrate_config_vec);
 
-    int count_diff;
-    double average_diff;
-    
-    for (int i = 0; i < 2000; i++) {
+    if(x264_picture_alloc( &pic, param.i_csp, param.i_width, param.i_height) < 0 ) {
+        cout << "x264_picture_alloc failed" << endl;
+        return -1;
+    }
 
+    encoder = x264_encoder_open(&param);
+    if( !encoder ) return -1;
 
+    int luma_size = width * height;
+    int chroma_size = luma_size / 4;
 
-#if CHANGE 
-        if (i == 300){
-            br = 1500;
-            cout << "Reconfig" << endl;
-            param_.rc.i_bitrate = br;
-            param_.rc.i_vbv_max_bitrate = br; //  3000
-            param_.rc.i_vbv_buffer_size = br / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
-
-            // param_.analyse.i_trellis = 1;
-            // param_.analyse.inter = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8
-            //             | X264_ANALYSE_PSUB16x16 | X264_ANALYSE_BSUB16x16;
-            // param_.analyse.i_subpel_refine = 4;           
-            // param_.analyse.i_me_method = X264_ME_HEX;  
-            // param_.i_frame_reference = 2;
-            x264_encoder_reconfig(encoder_, &param_);
+    /* Encode frames */
+    int current_bitrate = initial_bitrate;
+    int bitrate_config_index = 0;
+    vector<Statistics> statistics_result;
+    for(;; i_frame++) {
+        // Update bitrate limit if needed
+        if (bitrate_config_index < bitrate_config_vec.size() &&
+            i_frame == bitrate_config_vec[bitrate_config_index].start_frame_index) {
+            current_bitrate = bitrate_config_vec[bitrate_config_index].bitrate;
+            UpdateBitrateConfig(encoder, param, current_bitrate);
+            bitrate_config_index++;
         }
 
-#endif
-  
-        fread(yuv, 1, frame_size, file);
+        /* Read input frame */
+        if (fread(pic.img.plane[0], 1, luma_size, input_yuv_file) != (unsigned)luma_size) break;
+        if (fread(pic.img.plane[1], 1, chroma_size, input_yuv_file) != (unsigned)chroma_size) break;
+        if (fread(pic.img.plane[2], 1, chroma_size, input_yuv_file) != (unsigned)chroma_size) break;
 
-        cout << "frame number:" << frame_num << "\r";
-
-
-        pic_.img.plane[0] = yuv;
-        pic_.img.plane[1] = yuv + param_.i_width * param_.i_height;
-        pic_.img.plane[2] = yuv + param_.i_width * param_.i_height * 5 / 4;
-
-        pic_.i_pts = frame_num;
-        frame_num++;
-        int i_nal;
+        pic.i_pts = i_frame;
 
         // time analysis
-        auto start = chrono::high_resolution_clock::now();
-        int i_frame_size = x264_encoder_encode(encoder_, &nal_t_, &i_nal, &pic_, &pic_out_);
-        auto end = chrono::high_resolution_clock::now();
+        auto encode_start = chrono::high_resolution_clock::now();
+        i_frame_size = x264_encoder_encode(encoder, &nal, &i_nal, &pic, &pic_out);
+        auto encode_end = chrono::high_resolution_clock::now();
 
-        auto duration = chrono::duration_cast<chrono::microseconds>(end - start);
-        // miliseconds
+        auto duration = chrono::duration_cast<chrono::milliseconds>(encode_end - encode_start);
 
-        int duration_ms = duration.count() / 1000;
+        Statistics statistics{current_bitrate, i_frame_size, duration.count()};
+        statistics_result.push_back(statistics);
+        // cout << "real frame size:" << i_frame_size << endl;
 
-        frame_size_vec.push_back(i_frame_size);
-        cout << "real frame size:" << i_frame_size << endl;
-        duration_vec.push_back(duration_ms);
-        if (i_frame_size > 0) {
-            for (int i = 0; i < i_nal; i++) {
-                fwrite(nal_t_[i].p_payload, 1, nal_t_[i].i_payload, file_out);
-            }
-        
+        if (WriteNALToFile(encoded_file_out, nal, i_frame_size) < 0) {
+            cout << "WriteNALToFile failed" << endl;
+            return -1;
         }
-
     }
 
-    // write the frame size to file
-    FILE *file_size = fopen("size.json", "w");
-    fprintf(file_size, "[");
-    for (int i = 0; i < frame_size_vec.size() - 1; i++) {
-        fprintf(file_size, "%d,", frame_size_vec[i]);
+    /* Flush delayed frames */
+    while (x264_encoder_delayed_frames(encoder)) {
+        if (WriteNALToFile(encoded_file_out, nal, i_frame_size) < 0) {
+            cout << "WriteNALToFile failed" << endl;
+            return -1;
+        }
     }
-    fprintf(file_size, "%d]", frame_size_vec[frame_size_vec.size() - 1]);
 
-    // write the Encoding duration to file
-    FILE *file_duration = fopen("duration.json", "w");
-    fprintf(file_duration, "[");
-    for (int i = 0; i < duration_vec.size() - 1; i++) {
-        fprintf(file_duration, "%d,", duration_vec[i]);
-    }
-    fprintf(file_duration, "%d]", duration_vec[duration_vec.size() - 1]);
+    x264_encoder_close(encoder);
+    x264_picture_clean(&pic);
 
-    
-    x264_encoder_close(encoder_);
+    OutputStatistics(statistics_result);
+
+    fclose(input_yuv_file);
+    fclose(encoded_file_out);
+    fclose(bitrate_file);
+
     return 0;
 }
