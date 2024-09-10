@@ -8,14 +8,22 @@
 // Time Analysis
 #include <chrono>
 #include <vector>
+using namespace std;
 
 #define QP 21 // Used when CQP
 #define PRESET "superfast"
 #define VBV 1   // When VBV is 1, the actual frame size should not exceed the target
 #define INITIAL_BITRATE 3000
 #define FRAME_RATE 30
+#define MAX_BITRATE_BUFFER 50
+#define SMOOTH_BITRATE 1
 
-using namespace std;
+const string FILE_PREFIX = "/Users/menghua/Research/TestX264/";
+const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config.txt";
+const string BITRATE_CONFIG_OUT_FILE = FILE_PREFIX + "input/bitrate_config_out.txt";
+const string INPUT_VIDEO_FILE = FILE_PREFIX + "input/1280x720.yuv";
+const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/with_bitrate_buffer_with_smooth.mkv";
+const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/statistics_with_bitrate_buffer_with_smooth.csv";
 
 void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_bitrate) {
     x264_param_default_preset(&param, PRESET, "zerolatency");
@@ -45,7 +53,7 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = initial_bitrate;
 
-    param.rc.i_vbv_max_bitrate = initial_bitrate; //  3000
+    param.rc.i_vbv_max_bitrate = initial_bitrate + MAX_BITRATE_BUFFER;
     param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
     // param.rc.b_filler = 1;
 
@@ -63,13 +71,13 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     param.b_cabac = 1;  // 0 for CAVLC， 1 for higher complexity
 }
 
-struct bitrate_config {
+struct BitrateConfig {
     int start_frame_index;
     int bitrate;
 };
 
-void ReadBitrateConfig(FILE *bitrate_file, vector<bitrate_config> &bitrate_config_vec) {
-    bitrate_config config;
+void ReadBitrateConfig(FILE *bitrate_file, vector<BitrateConfig> &bitrate_config_vec) {
+    BitrateConfig config;
     while (fscanf(bitrate_file, "%d, %d", &config.start_frame_index,
                   &config.bitrate) != EOF) {
         bitrate_config_vec.push_back(config);
@@ -83,7 +91,7 @@ void ReadBitrateConfig(FILE *bitrate_file, vector<bitrate_config> &bitrate_confi
 void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
     cout << "Reconfig to bitrate:" << bitrate << endl;
     param.rc.i_bitrate = bitrate;
-    param.rc.i_vbv_max_bitrate = bitrate; //  3000
+    param.rc.i_vbv_max_bitrate = bitrate + MAX_BITRATE_BUFFER; //  3000
     param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
 
     // param_.analyse.i_trellis = 1;
@@ -93,6 +101,31 @@ void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
     // param_.analyse.i_me_method = X264_ME_HEX;  
     // param_.i_frame_reference = 2;
     x264_encoder_reconfig(encoder, &param);
+}
+
+void ModifyBitrateConfig(vector<BitrateConfig> &bitrate_config_vec, FILE *bitrate_file_out) {
+    int previous_frame_index = -1, previous_bitrate = -1;
+    vector<BitrateConfig> modifed_bitrate_config_vec;
+    for (auto& bitrate_config : bitrate_config_vec) {
+        if (previous_frame_index == -1) {
+            previous_frame_index = bitrate_config.start_frame_index;
+            previous_bitrate = bitrate_config.bitrate;
+        } else {
+            int bitrate_diff = bitrate_config.bitrate - previous_bitrate;
+            int frame_count = bitrate_config.start_frame_index - previous_frame_index;
+            int bitrate_step = bitrate_diff / frame_count;
+            for (int i = 0; i < frame_count; i++) {
+                fprintf(bitrate_file_out, "%d, %d\n", previous_frame_index + i, previous_bitrate + i * bitrate_step);
+                BitrateConfig config;
+                config.start_frame_index = previous_frame_index + i;
+                config.bitrate = previous_bitrate + i * bitrate_step;
+                modifed_bitrate_config_vec.push_back(config);
+            }
+            previous_frame_index = bitrate_config.start_frame_index;
+            previous_bitrate = bitrate_config.bitrate;
+        }
+    }
+    bitrate_config_vec = modifed_bitrate_config_vec;
 }
 
 int WriteNALToFile(FILE *file_out, x264_nal_t *nal, int i_frame_size) {
@@ -115,8 +148,8 @@ struct Statistics {
 
 void OutputStatistics(vector<Statistics> &statistics_result) {
     // write the frame size to file
-    FILE *statistics_file = fopen("statistics_result.csv", "w");
-    fprintf(statistics_file, "current_bitrate,frame_size,duration\n");
+    FILE *statistics_file = fopen(STATISTICS_RESULT_FILE.c_str(), "w");
+    // fprintf(statistics_file, "current_bitrate,frame_size,duration\n");
     for (int i = 0; i < statistics_result.size(); i++) {
         fprintf(statistics_file, "%d,%d,%d\n", statistics_result[i].current_bitrate,
                 statistics_result[i].frame_size, statistics_result[i].duration);
@@ -140,16 +173,24 @@ int main() {
 
     InitEncodeParam(param, width, height, initial_bitrate);
 
-    FILE *input_yuv_file = fopen("/Users/menghua/Research/TestX264/1280x720.yuv", "rb");
-    FILE *encoded_file_out = fopen("/Users/menghua/Research/TestX264/result.mkv", "wb");
-    FILE *bitrate_file = fopen("/Users/menghua/Research/TestX264/bitrate_config.txt", "rb");
-    if (!input_yuv_file || !encoded_file_out || !bitrate_file) {
+    FILE *input_yuv_file = fopen(INPUT_VIDEO_FILE.c_str(), "rb");
+    FILE *encoded_file_out = fopen(OUTPUT_VIDEO_FILE.c_str(), "wb");
+    FILE *bitrate_file = fopen(BITRATE_CONFIG_FILE.c_str(), "rb");
+    FILE *bitrate_file_out = nullptr;
+    if (SMOOTH_BITRATE) {
+        bitrate_file_out = fopen(BITRATE_CONFIG_OUT_FILE.c_str(), "w");
+    }
+    if (!input_yuv_file || !encoded_file_out || !bitrate_file || (SMOOTH_BITRATE && !bitrate_file_out)) {
         cout << "fopen failed" << endl;
         return -1;
     }
 
-    vector<bitrate_config> bitrate_config_vec;
+    vector<BitrateConfig> bitrate_config_vec;
     ReadBitrateConfig(bitrate_file, bitrate_config_vec);
+    if (bitrate_file_out) {
+        ModifyBitrateConfig(bitrate_config_vec, bitrate_file_out);
+        ReadBitrateConfig(bitrate_file_out, bitrate_config_vec);
+    }
 
     if(x264_picture_alloc( &pic, param.i_csp, param.i_width, param.i_height) < 0 ) {
         cout << "x264_picture_alloc failed" << endl;

@@ -1,2 +1,6 @@
 /build
 /test_libx264.cpp
+/input
+/result
+/.vscode
+/.DS_Store
