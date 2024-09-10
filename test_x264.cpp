@@ -13,6 +13,7 @@
 #define PRESET "superfast"
 #define VBV 1   // When VBV is 1, the actual frame size should not exceed the target
 #define INITIAL_BITRATE 3000
+#define FRAME_RATE 30
 
 using namespace std;
 
@@ -45,7 +46,7 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     param.rc.i_bitrate = initial_bitrate;
 
     param.rc.i_vbv_max_bitrate = initial_bitrate; //  3000
-    param.rc.i_vbv_buffer_size = initial_bitrate / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
+    param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
     // param.rc.b_filler = 1;
 
     // param.i_bframe = 0;
@@ -55,7 +56,7 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
 
     // param.i_log_level = X264_LOG_DEBUG;
     param.i_fps_den = 1;
-    param.i_fps_num = 30;
+    param.i_fps_num = FRAME_RATE;
 
     // param_.b_vfr_input = 0;
 
@@ -83,7 +84,7 @@ void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
     cout << "Reconfig to bitrate:" << bitrate << endl;
     param.rc.i_bitrate = bitrate;
     param.rc.i_vbv_max_bitrate = bitrate; //  3000
-    param.rc.i_vbv_buffer_size = bitrate / 30 * VBV; // kbit / 8 * 1000 = byte  // 100
+    param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
 
     // param_.analyse.i_trellis = 1;
     // param_.analyse.inter = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8
@@ -139,9 +140,9 @@ int main() {
 
     InitEncodeParam(param, width, height, initial_bitrate);
 
-    FILE *input_yuv_file = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\1280x720.yuv", "rb");
-    FILE *encoded_file_out = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\result.mkv", "wb");
-    FILE *bitrate_file = fopen("D:\\HK-PhD\\Research\\socket-codec\\TestX264\\bitrate_config.txt", "rb");
+    FILE *input_yuv_file = fopen("/Users/menghua/Research/TestX264/1280x720.yuv", "rb");
+    FILE *encoded_file_out = fopen("/Users/menghua/Research/TestX264/result.mkv", "wb");
+    FILE *bitrate_file = fopen("/Users/menghua/Research/TestX264/bitrate_config.txt", "rb");
     if (!input_yuv_file || !encoded_file_out || !bitrate_file) {
         cout << "fopen failed" << endl;
         return -1;
@@ -188,7 +189,10 @@ int main() {
 
         auto duration = chrono::duration_cast<chrono::milliseconds>(encode_end - encode_start);
 
-        Statistics statistics{current_bitrate, i_frame_size, duration.count()};
+        Statistics statistics;//{current_bitrate, i_frame_size, duration.count()};
+        statistics.current_bitrate = current_bitrate * 1000 / (8 * FRAME_RATE); // kbit to byte per frame
+        statistics.frame_size = i_frame_size;
+        statistics.duration = duration.count();
         statistics_result.push_back(statistics);
         // cout << "real frame size:" << i_frame_size << endl;
 
