@@ -52,6 +52,7 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     // ABR
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = initial_bitrate;
+    param.rc.i_qp_step = 50;
 
     param.rc.i_vbv_max_bitrate = initial_bitrate + MAX_BITRATE_BUFFER;
     param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
