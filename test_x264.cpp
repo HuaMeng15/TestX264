@@ -1,4 +1,3 @@
-
 #include "stdint.h"
 #include "x264.h"
 #include "x264_config.h"
@@ -15,15 +14,17 @@ using namespace std;
 #define VBV 1   // When VBV is 1, the actual frame size should not exceed the target
 #define INITIAL_BITRATE 3000
 #define FRAME_RATE 30
-#define MAX_BITRATE_BUFFER 50
-#define SMOOTH_BITRATE 1
+#define MAX_BITRATE_BUFFER 0
+#define SMOOTH_BITRATE 0
 
 const string FILE_PREFIX = "/Users/menghua/Research/TestX264/";
-const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config.txt";
+const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config3.txt";
 const string BITRATE_CONFIG_OUT_FILE = FILE_PREFIX + "input/bitrate_config_out.txt";
 const string INPUT_VIDEO_FILE = FILE_PREFIX + "input/1280x720.yuv";
-const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/with_bitrate_buffer_with_smooth.mkv";
-const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/statistics_with_bitrate_buffer_with_smooth.csv";
+const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/opt_vbv_1.mkv";
+const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/opt_vbv_1.csv";
+const bool ENABLE_OPTIMIZATION = true;
+const int DEFAULT_VBV = 15;
 
 void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_bitrate) {
     x264_param_default_preset(&param, PRESET, "zerolatency");
@@ -38,6 +39,8 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     param.i_bitdepth = 8;
     param.i_csp = X264_CSP_I420;
     param.b_repeat_headers = 1;
+    param.analyse.b_psnr = 1;
+    param.analyse.b_ssim = 1;
     // param.b_annexb = 1;  // for start code 0,0,0,1
 
     // Rate Control Method
@@ -52,10 +55,17 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     // ABR
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = initial_bitrate;
-    param.rc.i_qp_step = 50;
 
     param.rc.i_vbv_max_bitrate = initial_bitrate + MAX_BITRATE_BUFFER;
-    param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
+
+    if (ENABLE_OPTIMIZATION) {
+        param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
+        param.rc.i_qp_step = 50;
+    } else {
+        param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * DEFAULT_VBV;
+        param.rc.i_qp_step = 50;
+    }
+
     // param.rc.b_filler = 1;
 
     // param.i_bframe = 0;
@@ -83,17 +93,22 @@ void ReadBitrateConfig(FILE *bitrate_file, vector<BitrateConfig> &bitrate_config
                   &config.bitrate) != EOF) {
         bitrate_config_vec.push_back(config);
     }
-    cout << "Read " << bitrate_config_vec.size() << " bitrate config" << endl;
-    for (int i = 0; i < bitrate_config_vec.size(); i++) {
-        cout << "start_frame_index:" << bitrate_config_vec[i].start_frame_index << " bitrate:" << bitrate_config_vec[i].bitrate << endl;
-    }
+    // cout << "Read " << bitrate_config_vec.size() << " bitrate config" << endl;
+    // for (int i = 0; i < bitrate_config_vec.size(); i++) {
+    //     cout << "start_frame_index:" << bitrate_config_vec[i].start_frame_index << " bitrate:" << bitrate_config_vec[i].bitrate << endl;
+    // }
 }
 
 void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
     cout << "Reconfig to bitrate:" << bitrate << endl;
     param.rc.i_bitrate = bitrate;
     param.rc.i_vbv_max_bitrate = bitrate + MAX_BITRATE_BUFFER; //  3000
-    param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
+
+    if (ENABLE_OPTIMIZATION) {
+        param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
+    } else {
+        param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * DEFAULT_VBV;
+    }
 
     // param_.analyse.i_trellis = 1;
     // param_.analyse.inter = X264_ANALYSE_I4x4 | X264_ANALYSE_I8x8
@@ -151,7 +166,7 @@ void OutputStatistics(vector<Statistics> &statistics_result) {
     // write the frame size to file
     FILE *statistics_file = fopen(STATISTICS_RESULT_FILE.c_str(), "w");
     // fprintf(statistics_file, "current_bitrate,frame_size,duration\n");
-    for (int i = 0; i < statistics_result.size(); i++) {
+    for (int i = 2; i < statistics_result.size(); i++) {
         fprintf(statistics_file, "%d,%d,%d\n", statistics_result[i].current_bitrate,
                 statistics_result[i].frame_size, statistics_result[i].duration);
     }
@@ -207,6 +222,7 @@ int main() {
     /* Encode frames */
     int current_bitrate = initial_bitrate;
     int bitrate_config_index = 0;
+    int encode_duration = 0;
     vector<Statistics> statistics_result;
     for(;; i_frame++) {
         // Update bitrate limit if needed
@@ -230,6 +246,9 @@ int main() {
         auto encode_end = chrono::high_resolution_clock::now();
 
         auto duration = chrono::duration_cast<chrono::milliseconds>(encode_end - encode_start);
+        encode_duration += duration.count();
+
+        // cout << "PSNR: " << param.analyse.b_psnr << " SSIM:" << param.analyse.b_ssim << endl;
 
         Statistics statistics;//{current_bitrate, i_frame_size, duration.count()};
         statistics.current_bitrate = current_bitrate * 1000 / (8 * FRAME_RATE); // kbit to byte per frame
@@ -256,6 +275,10 @@ int main() {
     x264_picture_clean(&pic);
 
     OutputStatistics(statistics_result);
+
+    cout << endl << "--------------------------------------" << endl;
+    cout << "encode_duration:" << encode_duration << endl;
+    cout << "--------------------------------------" << endl << endl;
 
     fclose(input_yuv_file);
     fclose(encoded_file_out);

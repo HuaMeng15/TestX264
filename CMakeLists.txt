@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.5)
 project(test_libx264)
 
 # Add the source file
@@ -15,3 +15,5 @@ target_include_directories(test_libx264 PUBLIC ${LIBX264_INCLUDE_DIR})
 
 # Link against libx264
 target_link_libraries(test_libx264 ${LIBX264_LIBRARY})
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

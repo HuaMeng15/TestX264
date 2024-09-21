@@ -4,3 +4,7 @@
 /result
 /.vscode
 /.DS_Store
+/GenerateBitrate
+/GenerateBitrate.dSYM/
+/input_frames/
+/comparison_*

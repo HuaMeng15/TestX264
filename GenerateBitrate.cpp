@@ -3,9 +3,9 @@ using namespace std;
 
 int main() {
   //read the bitrate config
-  FILE *bitrate_file = fopen("/Users/menghua/Research/TestX264/bitrate_config.txt", "rb");
+  FILE *bitrate_file = fopen("/Users/menghua/Research/TestX264/input/bitrate_config.txt", "rb");
   // write the modified bitrate to file
-  FILE *bitrate_file_out = fopen("/Users/menghua/Research/TestX264/bitrate_config_out.txt", "w");
+  FILE *bitrate_file_out = fopen("/Users/menghua/Research/TestX264/bitrate_config_out2.txt", "w");
   if (!bitrate_file_out || !bitrate_file) {
     std::cout << "fopen failed" << std::endl;
     return -1;
