@@ -1,6 +1,7 @@
 from math import log10, sqrt
 from pathlib import Path
 import cv2
+import csv
 import ffmpeg
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,50 +14,71 @@ def PSNR(original, compressed):
         return 100
     max_pixel = 255.0
     psnr = 20 * log10(max_pixel / sqrt(mse)) 
-    return psnr 
+    return psnr
+
+def CalcAndSavePSNR(result_path, file_suffix, input_frames_directory):
+    psnr = []
+    frames_directory = f"{result_path}comparison_{file_suffix}/"
+    render_frame_index_path = f"{result_path}{file_suffix}_render_frame.txt"
+    psnr_file = f"{result_path}{file_suffix}_psnr.csv"
+
+    with open(render_frame_index_path, 'r') as file:
+        reader = csv.reader(file, delimiter=',')
+        data = list(reader)
+ 
+    render_frame_index = [int(row[1]) for row in data]
+
+    if (not Path(frames_directory).exists()):
+        video_path = f"{result_path}{file_suffix}.mkv"
+        Path(frames_directory).mkdir(parents=True, exist_ok=True)
+        (
+            ffmpeg.input(video_path)
+            .output(f"{frames_directory}output_%04d.png")
+            .run()
+        )
+
+    if (not Path(psnr_file).exists()):
+        with open(psnr_file, 'w') as file:
+            writer = csv.writer(file)
+            for i in range(1, render_frame_index.__len__()):
+                original = cv2.imread(f"{input_frames_directory}input_{i:04d}.png") 
+                compressed = cv2.imread(f"{frames_directory}output_{(render_frame_index[i - 1] + 1):04d}.png", 1)
+                value = PSNR(original, compressed)
+                psnr.append(value)
+                writer.writerow([i, value])
+            file.close()
+    else:
+        with open(psnr_file, 'r') as file:
+            reader = csv.reader(file, delimiter=',')
+            data = list(reader)
+        psnr = [float(row[1]) for row in data]
+    
+    start_index = 100
+    end_index = 180
+    print(f"{file_suffix} Average PSNR value is {statistics.mean(psnr)} dB")
+    print(f"{file_suffix} Average PSNR value of {start_index} - {end_index} is {statistics.mean(psnr[start_index:end_index])} dB")
+    time = np.arange(psnr.__len__())
+    if file_suffix == 'default_no_drop':
+        plt.plot(time[start_index:end_index], psnr[start_index:end_index], label = file_suffix, linewidth = '1')  # Plot the chart
+    else:
+        plt.plot(time[start_index:end_index], psnr[start_index:end_index], label = file_suffix, linewidth = '1')  # Plot the chart
 
 def main():
-    opt_psnr = []
-    default_psnr = []
     project_path = "/Users/menghua/Research/TestX264/"
-    comparison_video_suffix = "opt_vbv_1"
-    comparison_video_suffix_default = "default_vbv_15"
-    input_frames_directory = f"{project_path}input_frames/"
-    comparison_frames_directory = f"{project_path}comparison_{comparison_video_suffix}/"
-    comparison_frames_directory_default = f"{project_path}comparison_{comparison_video_suffix_default}/"
-    
-    if (not Path(comparison_frames_directory).exists()):
-        comparison_video_path = f"{project_path}result/{comparison_video_suffix}.mkv"
-        Path(comparison_frames_directory).mkdir(parents=True, exist_ok=True)
-        (
-            ffmpeg.input(comparison_video_path)
-            .output(f"{comparison_frames_directory}output_%04d.png")
-            .run()
-        )
-    if (not Path(comparison_frames_directory_default).exists()):
-        comparison_video_path_default = f"{project_path}result/{comparison_video_suffix_default}.mkv"
-        Path(comparison_frames_directory_default).mkdir(parents=True, exist_ok=True)
-        (
-            ffmpeg.input(comparison_video_path_default)
-            .output(f"{comparison_frames_directory_default}output_%04d.png")
-            .run()
-        )
+    input_frames_directory = f"{project_path}input/Lecture720_input_frames/"
+    result_path = f"{project_path}result/sports_config3/"
 
-    for i in range(1, 479):
-        original = cv2.imread(f"{input_frames_directory}input_{i:04d}.png") 
-        compressed = cv2.imread(f"{comparison_frames_directory}output_{i:04d}.png", 1)
-        compressed_default = cv2.imread(f"{comparison_frames_directory_default}output_{i:04d}.png", 1)
-        value = PSNR(original, compressed)
-        opt_psnr.append(value)
-        value2 = PSNR(original, compressed_default)
-        default_psnr.append(value2)
-        print(f"Frame {i} opt PSNR value is {value} dB, default PSNR value is {value2} dB")
+    default_drop = 'default_drop'
+    default_no_drop = 'default_no_drop'
+    opt_drop = 'opt_drop'
+    opt_no_drop = 'opt_no_drop'
 
-    print(f"Average PSNR value is {statistics.mean(opt_psnr)} dB")
-    print(f"Average default PSNR value is {statistics.mean(default_psnr)} dB")
-    time = np.arange(opt_psnr.__len__())
-    plt.plot(time, opt_psnr, label = "opt_psnr")  # Plot the chart
-    plt.plot(time, default_psnr, label = "default_psnr")  # Plot the chart
+    plt.figure(figsize=(14,6))
+    CalcAndSavePSNR(result_path, default_drop, input_frames_directory)
+    CalcAndSavePSNR(result_path, default_no_drop, input_frames_directory)
+    CalcAndSavePSNR(result_path, opt_drop, input_frames_directory)
+    CalcAndSavePSNR(result_path, opt_no_drop, input_frames_directory)
+
     plt.legend()
     plt.show()  # display
        

@@ -2,7 +2,6 @@
 #include "x264.h"
 #include "x264_config.h"
 #include <iostream>
-//memcpy
 #include <string.h>
 // Time Analysis
 #include <chrono>
@@ -11,29 +10,41 @@ using namespace std;
 
 #define QP 21 // Used when CQP
 #define PRESET "superfast"
-#define VBV 1   // When VBV is 1, the actual frame size should not exceed the target
-#define INITIAL_BITRATE 3000
-#define FRAME_RATE 30
-#define MAX_BITRATE_BUFFER 0
 #define SMOOTH_BITRATE 0
 
+// file configurations
+const string FILE_NAME = "lecture720_static/opt";
 const string FILE_PREFIX = "/Users/menghua/Research/TestX264/";
-const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config3.txt";
+const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config.txt";
 const string BITRATE_CONFIG_OUT_FILE = FILE_PREFIX + "input/bitrate_config_out.txt";
 const string INPUT_VIDEO_FILE = FILE_PREFIX + "input/1280x720.yuv";
-const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/opt_vbv_1.mkv";
-const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/opt_vbv_1.csv";
-const bool ENABLE_OPTIMIZATION = true;
-const int DEFAULT_VBV = 15;
+const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/" + FILE_NAME + ".mkv";
+const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/" + FILE_NAME + ".csv";
+const string OUTPUT_FRAME_INDEX_FILE = FILE_PREFIX + "/result/" + FILE_NAME + "_render_frame.txt";
 
-void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_bitrate) {
+// Basic configurations
+const int WIDTH = 1280;
+const int HEIGHT = 720;
+const int FRAME_RATE = 30;
+const int INITIAL_BITRATE = 3000;
+
+// VBV settings
+const bool ENABLE_OPTIMIZATION = true;
+const bool DROP_TOP_FRAME_WHEN_NETWORK_CHANGE = false;
+
+const bool DROP_CURRENT_FRAME_WHEN_BUFFER_FULL = true;
+const int DEFAULT_VBV = 15;
+const int VBV = 1; // When VBV is 1, the actual frame size should not exceed the target
+const int PREVIOUS_DROP_NUMBER = 0;
+
+void InitEncodeParam(x264_param_t &param, int &initial_bitrate) {
     x264_param_default_preset(&param, PRESET, "zerolatency");
 
     /* Configure non-default params */
     param.i_threads = 2;
     param.b_sliced_threads = 1;
-    param.i_width = width;
-    param.i_height = height;
+    param.i_width = WIDTH;
+    param.i_height = HEIGHT;
     param.i_frame_total = 0;
     param.i_keyint_max = 1500;
     param.i_bitdepth = 8;
@@ -56,15 +67,12 @@ void InitEncodeParam(x264_param_t &param, int &width, int &height, int &initial_
     param.rc.i_rc_method = X264_RC_ABR;
     param.rc.i_bitrate = initial_bitrate;
 
-    param.rc.i_vbv_max_bitrate = initial_bitrate + MAX_BITRATE_BUFFER;
+    param.rc.i_vbv_max_bitrate = initial_bitrate;
 
     if (ENABLE_OPTIMIZATION) {
-        param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
-        param.rc.i_qp_step = 50;
-    } else {
-        param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * DEFAULT_VBV;
-        param.rc.i_qp_step = 50;
+        // param.rc.i_qp_step = 50;
     }
+    param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * DEFAULT_VBV; // kbit / 8 * 1000 = byte
 
     // param.rc.b_filler = 1;
 
@@ -102,7 +110,7 @@ void ReadBitrateConfig(FILE *bitrate_file, vector<BitrateConfig> &bitrate_config
 void UpdateBitrateConfig(x264_t *encoder, x264_param_t &param, int bitrate) {
     cout << "Reconfig to bitrate:" << bitrate << endl;
     param.rc.i_bitrate = bitrate;
-    param.rc.i_vbv_max_bitrate = bitrate + MAX_BITRATE_BUFFER; //  3000
+    param.rc.i_vbv_max_bitrate = bitrate; //  3000
 
     if (ENABLE_OPTIMIZATION) {
         param.rc.i_vbv_buffer_size = bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
@@ -166,11 +174,75 @@ void OutputStatistics(vector<Statistics> &statistics_result) {
     // write the frame size to file
     FILE *statistics_file = fopen(STATISTICS_RESULT_FILE.c_str(), "w");
     // fprintf(statistics_file, "current_bitrate,frame_size,duration\n");
-    for (int i = 2; i < statistics_result.size(); i++) {
+    for (int i = 0; i < statistics_result.size(); i++) {
         fprintf(statistics_file, "%d,%d,%d\n", statistics_result[i].current_bitrate,
                 statistics_result[i].frame_size, statistics_result[i].duration);
     }
     fclose(statistics_file);
+}
+
+void OutputFrameIndex(vector<int> &dropped_frame_indexs, int frame_number) {
+    FILE *frame_index_file = fopen(OUTPUT_FRAME_INDEX_FILE.c_str(), "w");
+    int last_rendered_frame_index = -1;
+    int drop_vector_index = 0;
+    for (int i = 0; i < frame_number; i++) {
+        int render_frame_index = i;
+        if (drop_vector_index < dropped_frame_indexs.size() &&
+            i == dropped_frame_indexs[drop_vector_index]) {
+            drop_vector_index++;
+            render_frame_index = last_rendered_frame_index;
+        }
+        last_rendered_frame_index = render_frame_index;
+        fprintf(frame_index_file, "%d, %d\n", i, render_frame_index);
+    }
+    fclose(frame_index_file);
+}
+
+struct NetworkBufferFrame {
+    int frame_index;
+    int frame_size;
+    int buffer_size;
+};
+
+void UpdateBufferFrames(vector<NetworkBufferFrame> &network_buffer_frames, int current_frame_index, int current_frame_size,
+                        int &network_remain_buffer_size, int network_buffer_size, int transmit_size, vector<int> &dropped_frame_indexs) {
+    // transmit one frame
+    network_remain_buffer_size = min(network_remain_buffer_size + transmit_size, network_buffer_size);
+    while (transmit_size > 0 && !network_buffer_frames.empty()) {
+        NetworkBufferFrame &frame = network_buffer_frames.front();
+        if (frame.buffer_size <= transmit_size) {
+            transmit_size -= frame.buffer_size;
+            cout << "Transmit frame: " << frame.frame_index << " overall size: " << frame.frame_size << " frame.buffer_size: " << frame.buffer_size << " finished. transmit_size: " << transmit_size << endl;
+            network_buffer_frames.erase(network_buffer_frames.begin());
+        } else {
+            frame.buffer_size -= transmit_size;
+            transmit_size = 0;
+            cout << "Transmit part of the frame: " << frame.frame_index << " overall size: " << frame.frame_size << " frame.buffer_size: " << frame.buffer_size << " transmit_size: " << transmit_size << endl;
+        }
+    }
+
+    // try to insert the current frame into the buffer
+    if (current_frame_size > network_remain_buffer_size) {
+        if (DROP_CURRENT_FRAME_WHEN_BUFFER_FULL) { // drop current frame.
+            dropped_frame_indexs.push_back(current_frame_index);
+            cout << "Drop frame: " << current_frame_index << " overall size: " << current_frame_size << " remain_size: " << network_remain_buffer_size << endl;
+            return;
+        }
+        while (current_frame_size > network_remain_buffer_size) {
+            NetworkBufferFrame &frame = network_buffer_frames.front();
+            network_remain_buffer_size += frame.buffer_size;
+            network_buffer_frames.erase(network_buffer_frames.begin());
+            dropped_frame_indexs.push_back(frame.frame_index);
+            cout << "Drop frame: " << frame.frame_index << " overall size: " << frame.frame_size <<  " frame.buffer_size: " << frame.buffer_size << " remain_size: " << network_remain_buffer_size << endl;
+        }
+    }
+    network_remain_buffer_size -= current_frame_size;
+    NetworkBufferFrame frame;
+    frame.frame_index = current_frame_index;
+    frame.frame_size = current_frame_size;
+    frame.buffer_size = current_frame_size;
+    network_buffer_frames.push_back(frame);
+    cout << "Insert frame: " << current_frame_index << " overall size: " << current_frame_size << " network_remain_buffer_size: " << network_remain_buffer_size << endl;
 }
 
 int main() {
@@ -184,14 +256,12 @@ int main() {
     int i_nal;
     int initial_bitrate = INITIAL_BITRATE;
 
-    int width = 1280;
-    int height = 720;
-
-    InitEncodeParam(param, width, height, initial_bitrate);
+    InitEncodeParam(param, initial_bitrate);
 
     FILE *input_yuv_file = fopen(INPUT_VIDEO_FILE.c_str(), "rb");
     FILE *encoded_file_out = fopen(OUTPUT_VIDEO_FILE.c_str(), "wb");
     FILE *bitrate_file = fopen(BITRATE_CONFIG_FILE.c_str(), "rb");
+    FILE *frame_index_file = fopen(OUTPUT_FRAME_INDEX_FILE.c_str(), "w");
     FILE *bitrate_file_out = nullptr;
     if (SMOOTH_BITRATE) {
         bitrate_file_out = fopen(BITRATE_CONFIG_OUT_FILE.c_str(), "w");
@@ -216,21 +286,56 @@ int main() {
     encoder = x264_encoder_open(&param);
     if( !encoder ) return -1;
 
-    int luma_size = width * height;
+    int luma_size = param.i_width * param.i_height;
     int chroma_size = luma_size / 4;
 
     /* Encode frames */
     int current_bitrate = initial_bitrate;
-    int bitrate_config_index = 0;
+    // TODO: start from 1, ignore the initial frame because we have set in the code to 3000
+    int bitrate_config_index = 1;
     int encode_duration = 0;
     vector<Statistics> statistics_result;
+    int change_index = -1;
+    int network_buffer_size = current_bitrate / 5; // kbit, max 200ms delay
+    int network_remain_buffer_size = network_buffer_size; // kbit
+    vector<NetworkBufferFrame> network_buffer_frames;
+    vector<int> dropped_frame_indexs;
     for(;; i_frame++) {
         // Update bitrate limit if needed
-        if (bitrate_config_index < bitrate_config_vec.size() &&
-            i_frame == bitrate_config_vec[bitrate_config_index].start_frame_index) {
-            current_bitrate = bitrate_config_vec[bitrate_config_index].bitrate;
-            UpdateBitrateConfig(encoder, param, current_bitrate);
-            bitrate_config_index++;
+        if (bitrate_config_index < bitrate_config_vec.size()) {
+            int target_frame_index = bitrate_config_vec[bitrate_config_index].start_frame_index;
+            if (i_frame == target_frame_index) {
+                current_bitrate = bitrate_config_vec[bitrate_config_index].bitrate;
+                UpdateBitrateConfig(encoder, param, current_bitrate);
+                bitrate_config_index++;
+
+                // Update network buffer size
+                int current_occupy_buffer_size =  network_buffer_size - network_remain_buffer_size;
+                network_buffer_size = current_bitrate / 5;
+                cout << "Update network_buffer_size to " << network_buffer_size << " current_occupy_buffer_size: " << current_occupy_buffer_size << endl;
+                if (DROP_TOP_FRAME_WHEN_NETWORK_CHANGE) {
+                    while (network_buffer_size < current_occupy_buffer_size) {
+                        NetworkBufferFrame &frame = network_buffer_frames.front();
+                        current_occupy_buffer_size -= frame.buffer_size;
+                        dropped_frame_indexs.push_back(frame.frame_index);
+                        cout << "Drop frame: " << frame.frame_index << " overall size: " << frame.frame_size <<  " frame.buffer_size: " << frame.buffer_size << " current_occupy_buffer_size: " << current_occupy_buffer_size << endl;
+                        network_buffer_frames.erase(network_buffer_frames.begin());
+                    }
+                }
+                network_remain_buffer_size = network_buffer_size - current_occupy_buffer_size;
+                cout << "Change network buffer size to: " << network_buffer_size << " network_remain_buffer_size: " << network_remain_buffer_size << " used_buffer_size:" << current_occupy_buffer_size << endl;
+
+                change_index = i_frame;
+            } else if (ENABLE_OPTIMIZATION && i_frame == target_frame_index - PREVIOUS_DROP_NUMBER) { // previously decrease the buffer size
+                param.rc.i_vbv_buffer_size = current_bitrate / FRAME_RATE * VBV; // kbit / 8 * 1000 = byte  // 100
+                x264_encoder_reconfig(encoder, &param);
+            }
+        }
+        // Recover VBV buffer size after network change
+        if (ENABLE_OPTIMIZATION && change_index != -1 && i_frame == change_index + 2) {
+            cout << "Recover vbv buffer" << endl;
+            param.rc.i_vbv_buffer_size = current_bitrate / FRAME_RATE * DEFAULT_VBV;
+            x264_encoder_reconfig(encoder, &param);
         }
 
         /* Read input frame */
@@ -247,6 +352,10 @@ int main() {
 
         auto duration = chrono::duration_cast<chrono::milliseconds>(encode_end - encode_start);
         encode_duration += duration.count();
+
+        // Handle pacer buffer
+        cout << "---------------------------Transmit size: " << current_bitrate / FRAME_RATE << "---------------------------------" << endl;
+        UpdateBufferFrames(network_buffer_frames, i_frame, i_frame_size * 8 / 1000, network_remain_buffer_size, network_buffer_size, current_bitrate / FRAME_RATE, dropped_frame_indexs);
 
         // cout << "PSNR: " << param.analyse.b_psnr << " SSIM:" << param.analyse.b_ssim << endl;
 
@@ -275,6 +384,7 @@ int main() {
     x264_picture_clean(&pic);
 
     OutputStatistics(statistics_result);
+    OutputFrameIndex(dropped_frame_indexs, i_frame);
 
     cout << endl << "--------------------------------------" << endl;
     cout << "encode_duration:" << encode_duration << endl;
