@@ -53,8 +53,8 @@ def CalcAndSavePSNR(result_path, file_suffix, input_frames_directory):
             data = list(reader)
         psnr = [float(row[1]) for row in data]
     
-    start_index = 100
-    end_index = 180
+    start_index = 0
+    end_index = psnr.__len__()
     print(f"{file_suffix} Average PSNR value is {statistics.mean(psnr)} dB")
     print(f"{file_suffix} Average PSNR value of {start_index} - {end_index} is {statistics.mean(psnr[start_index:end_index])} dB")
     time = np.arange(psnr.__len__())
@@ -65,8 +65,11 @@ def CalcAndSavePSNR(result_path, file_suffix, input_frames_directory):
 
 def main():
     project_path = "/Users/menghua/Research/TestX264/"
-    input_frames_directory = f"{project_path}input/Lecture720_input_frames/"
-    result_path = f"{project_path}result/sports_config3/"
+    file_name = "Lecture1"
+    bitrate_config = "3000-50"
+    input_frames_directory = f"{project_path}input/{file_name}_input_frames/"
+    result_path = f"{project_path}result/{file_name}_{bitrate_config}/"
+    save_fig_path = f"{project_path}result_plots/PSNR/PSNR_{file_name}_{bitrate_config}.png"
 
     default_drop = 'default_drop'
     default_no_drop = 'default_no_drop'
@@ -74,12 +77,15 @@ def main():
     opt_no_drop = 'opt_no_drop'
 
     plt.figure(figsize=(14,6))
-    CalcAndSavePSNR(result_path, default_drop, input_frames_directory)
     CalcAndSavePSNR(result_path, default_no_drop, input_frames_directory)
-    CalcAndSavePSNR(result_path, opt_drop, input_frames_directory)
+    CalcAndSavePSNR(result_path, default_drop, input_frames_directory)
     CalcAndSavePSNR(result_path, opt_no_drop, input_frames_directory)
+    CalcAndSavePSNR(result_path, opt_drop, input_frames_directory)
+    # CalcAndSavePSNR(result_path, "default", input_frames_directory)
+    # CalcAndSavePSNR(result_path, "opt", input_frames_directory)
 
     plt.legend()
+    # plt.savefig(save_fig_path)
     plt.show()  # display
        
 if __name__ == "__main__": 

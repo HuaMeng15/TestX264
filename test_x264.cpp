@@ -2,6 +2,7 @@
 #include "x264.h"
 #include "x264_config.h"
 #include <iostream>
+#include <filesystem>
 #include <string.h>
 // Time Analysis
 #include <chrono>
@@ -12,25 +13,31 @@ using namespace std;
 #define PRESET "superfast"
 #define SMOOTH_BITRATE 0
 
+// Basic configurations
+const int WIDTH = 1920;
+const int HEIGHT = 1080;
+const int FRAME_RATE = 30;
+const int INITIAL_BITRATE = 3000;
+
+const string filenames[4] = {"default_no_drop", "default_drop", "opt_no_drop", "opt_drop"};
+const bool configurations[4][2] = {{false, false}, {false, true}, {true, false}, {true, true}};
+const int run_index = 0;
 // file configurations
-const string FILE_NAME = "lecture720_static/opt";
+const string video_name = "Lecture1";
+const string bitrate_config_file = "3000-300";
+const string result_directory = video_name + "_" + bitrate_config_file + "/";
+const string FILE_NAME = result_directory + filenames[run_index];
 const string FILE_PREFIX = "/Users/menghua/Research/TestX264/";
-const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config.txt";
+const string BITRATE_CONFIG_FILE =  FILE_PREFIX + "input/bitrate_config/" + bitrate_config_file + ".txt";
 const string BITRATE_CONFIG_OUT_FILE = FILE_PREFIX + "input/bitrate_config_out.txt";
-const string INPUT_VIDEO_FILE = FILE_PREFIX + "input/1280x720.yuv";
+const string INPUT_VIDEO_FILE = FILE_PREFIX + "input/" + video_name + "_" + std::to_string(WIDTH) + "x" + std::to_string(HEIGHT) + ".yuv";
 const string OUTPUT_VIDEO_FILE = FILE_PREFIX + "result/" + FILE_NAME + ".mkv";
 const string STATISTICS_RESULT_FILE = FILE_PREFIX + "result/" + FILE_NAME + ".csv";
 const string OUTPUT_FRAME_INDEX_FILE = FILE_PREFIX + "/result/" + FILE_NAME + "_render_frame.txt";
 
-// Basic configurations
-const int WIDTH = 1280;
-const int HEIGHT = 720;
-const int FRAME_RATE = 30;
-const int INITIAL_BITRATE = 3000;
-
 // VBV settings
-const bool ENABLE_OPTIMIZATION = true;
-const bool DROP_TOP_FRAME_WHEN_NETWORK_CHANGE = false;
+const bool ENABLE_OPTIMIZATION = configurations[run_index][0];
+const bool DROP_TOP_FRAME_WHEN_NETWORK_CHANGE = configurations[run_index][1];
 
 const bool DROP_CURRENT_FRAME_WHEN_BUFFER_FULL = true;
 const int DEFAULT_VBV = 15;
@@ -70,7 +77,7 @@ void InitEncodeParam(x264_param_t &param, int &initial_bitrate) {
     param.rc.i_vbv_max_bitrate = initial_bitrate;
 
     if (ENABLE_OPTIMIZATION) {
-        // param.rc.i_qp_step = 50;
+        param.rc.i_qp_step = 50;
     }
     param.rc.i_vbv_buffer_size = initial_bitrate / FRAME_RATE * DEFAULT_VBV; // kbit / 8 * 1000 = byte
 
@@ -183,7 +190,7 @@ void OutputStatistics(vector<Statistics> &statistics_result) {
 
 void OutputFrameIndex(vector<int> &dropped_frame_indexs, int frame_number) {
     FILE *frame_index_file = fopen(OUTPUT_FRAME_INDEX_FILE.c_str(), "w");
-    int last_rendered_frame_index = -1;
+    int last_rendered_frame_index = 0;
     int drop_vector_index = 0;
     for (int i = 0; i < frame_number; i++) {
         int render_frame_index = i;
@@ -257,6 +264,11 @@ int main() {
     int initial_bitrate = INITIAL_BITRATE;
 
     InitEncodeParam(param, initial_bitrate);
+
+    if (!std::filesystem::is_directory(FILE_PREFIX + "result/" + result_directory)) {
+        cout << "Create directory: " <<  FILE_PREFIX + "result/" + result_directory << endl;
+        std::filesystem::create_directory(FILE_PREFIX + "result/" + result_directory);
+    }
 
     FILE *input_yuv_file = fopen(INPUT_VIDEO_FILE.c_str(), "rb");
     FILE *encoded_file_out = fopen(OUTPUT_VIDEO_FILE.c_str(), "wb");
