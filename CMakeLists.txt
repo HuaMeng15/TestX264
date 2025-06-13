@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.22)
 project(test_libx264)
 
 # target_compile_features(test_libx264 PRIVATE cxx_std_17)
@@ -10,10 +10,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(test_libx264 test_x264.cpp)
 
 # Set the path to libx264.a
-set(LIBX264_LIBRARY "/Users/menghua/Research/x264/libx264.a")
+set(LIBX264_LIBRARY "/home/eceuser/menghua/Research/x264/libx264.a")
 
 # Set the path to x264.h
-set(LIBX264_INCLUDE_DIR "/Users/menghua/Research/TestX264/include")
+set(LIBX264_INCLUDE_DIR "/home/eceuser/menghua/Research/TestX264/include")
 
 # Add the include directory
 target_include_directories(test_libx264 PUBLIC ${LIBX264_INCLUDE_DIR})

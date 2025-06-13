@@ -105,7 +105,7 @@ def CalcAndSavePSNR(result_path, file_suffix, input_frames_directory, psnr_stati
 def main():
     file_names = ["Lecture720", "Lecture1", "Lecture2", "Lecture3", "Lecture4", "Sports", "Sport2", "Animation1", "Animation2", "CoverSong", "Gaming"]
     bitrate_configs = ["static", "3000-1500", "3000-300", "3000-50"]
-    project_path = "/Users/menghua/Research/TestX264/"
+    project_path = "/Users/menghua/menghua/Research/TestX264/"
     psnr_statistics_path = f"{project_path}psnr_statistics.csv"
 
     if (Path(psnr_statistics_path).exists()):

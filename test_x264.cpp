@@ -10,6 +10,7 @@
 #include <thread> // For std::this_thread::sleep_for
 #include <mutex>
 #include <fstream>
+#include <condition_variable>
 
 using namespace std;
 
@@ -17,7 +18,7 @@ using namespace std;
 #define PRESET "superfast"
 
 const bool ENABLE_LOG = true;
-const string FILE_PREFIX = "/Users/menghua/Research/TestX264/";
+const string FILE_PREFIX = "/home/eceuser/menghua/Research/TestX264/";
 const double REDUCE_RATIO = 0.8;
 
 void InitEncodeParam(x264_param_t &param, int &initial_bitrate, int frame_rate, int width, int height, double vbv_buffer_size) {
@@ -182,7 +183,7 @@ void TransmitNetworkBuffer(const string& receive_log) {
     out_file.close();
 }
 
-void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate_config_filename, const string &output_dir, int initial_bitrate, int frame_rate, int width, int height, double vbv_buffer_size) {
+void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate_config_filename, const string &output_dir, int initial_bitrate, int frame_rate, int width, int height, double vbv_buffer_size, int response_time, const string &suffix) {
     x264_param_t param;
     x264_t *encoder;
     x264_picture_t pic;
@@ -193,9 +194,9 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
     int i_nal;
 
     string send_log_file = output_dir + "send.log";
-    string bitrate_config_file =  FILE_PREFIX + "input/bitrate_config/" + bitrate_config_filename + ".txt";
-    string input_video_file = FILE_PREFIX + "input/" + video_name + "_" + std::to_string(width) + "x" + std::to_string(height) + ".yuv";
-    string output_video_file = output_dir + "receive.mp4";
+    string bitrate_config_file =  FILE_PREFIX + "input/bitrate_config/" + bitrate_config_filename;
+    string input_video_file = FILE_PREFIX + "input/" + video_name + ".yuv";
+    string output_video_file = output_dir + "result.mkv";
 
     InitEncodeParam(param, initial_bitrate, frame_rate, width, height, vbv_buffer_size);
 
@@ -231,23 +232,44 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
 
     /* Encode frames */
     {
-        std::lock_guard<std::mutex> lock(bitrate_mtx);
+        // std::lock_guard<std::mutex> lock(bitrate_mtx);
         current_bitrate = initial_bitrate;
     }
     int bitrate_config_index = 0;
+    int drop_period_frames = 0;
 
     for(;; i_frame++) {
         // Update bitrate
         if (bitrate_config_index < bitrate_config_vec.size()) {
-            if (i_frame == bitrate_config_vec[bitrate_config_index].start_frame_index) {
+            if (i_frame == bitrate_config_vec[bitrate_config_index].start_frame_index + response_time) {
                 {
-                    std::lock_guard<std::mutex> lock(bitrate_mtx);
+                    // std::lock_guard<std::mutex> lock(bitrate_mtx);
                     current_bitrate = bitrate_config_vec[bitrate_config_index].bitrate;
                 }
-                UpdateBitrateConfig(encoder, param, current_bitrate, vbv_buffer_size);
-                cout << "Update bitrate at frame" << i_frame << " Current bitrate: " << current_bitrate << " codec bitrate: " << param.rc.i_bitrate << endl;
+                double vbv_ratio = vbv_buffer_size;
 
                 bitrate_config_index++;
+                if (suffix == "_adaptive_") {
+                    if (i_frame != response_time) {
+                    // Reduce vbv_buffer_size for 10 frames
+                    drop_period_frames = 10;
+                    if (vbv_ratio > 0.5) {
+                        vbv_ratio = 0.1;
+                    } else {
+                        vbv_ratio = 0.04;
+                    }
+                    cout << "Update drop_period_frames: " << drop_period_frames << endl;
+                }
+                }
+                UpdateBitrateConfig(encoder, param, current_bitrate, vbv_ratio);
+                cout << "Update bitrate at frame" << i_frame << " Current bitrate: " << current_bitrate << " codec bitrate: " << param.rc.i_bitrate << " vbv_buffer_size: " << param.rc.i_vbv_buffer_size << endl;
+            }
+        }
+        if (drop_period_frames > 0) {
+            drop_period_frames--;
+            if (drop_period_frames == 0) {
+                UpdateBitrateConfig(encoder, param, current_bitrate, vbv_buffer_size);
+                cout << "Update bitrate at frame" << i_frame << " Current bitrate: " << current_bitrate << " codec bitrate: " << param.rc.i_bitrate << " vbv_buffer_size: " << param.rc.i_vbv_buffer_size << endl;
             }
         }
         /* Read input frame */
@@ -277,9 +299,9 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
         if (i_frame > 0) {
             network_buffer_frames.push_back({i_frame + 1, i_frame_size, i_frame_size});
         }
-        send_one_frame_cv.notify_one();
+        // send_one_frame_cv.notify_one();
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000 / frame_rate - encoded_duration));
+        // std::this_thread::sleep_for(std::chrono::milliseconds(1000 / frame_rate - encoded_duration));
     }
 
     /* Flush delayed frames */
@@ -290,11 +312,11 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(send_finish_mtx);
-        send_finished = true;
-    }
-    send_one_frame_cv.notify_one();
+    // {
+    //     std::lock_guard<std::mutex> lock(send_finish_mtx);
+    //     send_finished = true;
+    // }
+    // send_one_frame_cv.notify_one();
 
     x264_encoder_close(encoder);
     x264_picture_clean(&pic);
@@ -308,7 +330,7 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 5) {
+    if (argc < 7) {
         std::cerr << "Invalid arguments." << std::endl;
         return 1; // Return an error code
     }
@@ -317,7 +339,11 @@ int main(int argc, char* argv[]) {
     char* end;
     double vbv_buffer_size = std::strtod(argv[3], &end);
     string output_dir = argv[4];
+    int response_time = std::strtod(argv[5], &end);
+    string suffix = argv[6];
     cout << "bitrate_filename:" << bitrate_filename << " vbv_buffer_size:" << vbv_buffer_size << endl;
+    cout << "output_dir:" << output_dir << " response_time:" << response_time << endl;
+    // return 0;
 
     // Basic configurations
     int frame_rate = 30;
@@ -325,14 +351,14 @@ int main(int argc, char* argv[]) {
     int width = 1920;
     int height = 1080;
 
-    std::thread encode_thread(EncodeAndGenerateStatistics, video_name, bitrate_filename, output_dir, initial_bitrate, frame_rate, width, height, vbv_buffer_size);
-    string receive_log_file = output_dir + "receive.log";
-    std::thread transmit_thread(TransmitNetworkBuffer, receive_log_file);
+    // std::thread encode_thread(EncodeAndGenerateStatistics, video_name, bitrate_filename, output_dir, initial_bitrate, frame_rate, width, height, vbv_buffer_size);
+    // string receive_log_file = output_dir + "receive.log";
+    // std::thread transmit_thread(TransmitNetworkBuffer, receive_log_file);
 
-    encode_thread.join();
-    transmit_thread.join();
+    // encode_thread.join();
+    // transmit_thread.join();
 
-    // EncodeAndGenerateStatistics("Lecture4_part", bitrate_filename, initial_bitrate, frame_rate, width, height, vbv_buffer_size);
+    EncodeAndGenerateStatistics(video_name, bitrate_filename, output_dir, initial_bitrate, frame_rate, width, height, vbv_buffer_size, response_time, suffix);
 
     return 0;
 }
