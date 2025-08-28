@@ -1,7 +1,8 @@
 /build
 /test_libx264.cpp
 /input
-/result
+/result*
+/2024_result
 /.vscode
 /.DS_Store
 /GenerateBitrate
