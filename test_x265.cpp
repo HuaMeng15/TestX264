@@ -26,16 +26,19 @@ void InitEncodeParam(x265_param &param, int initial_bitrate, int frame_rate, int
     param.sourceHeight = height;
     param.fpsNum = frame_rate;
     param.fpsDenom = 1;
-    // param.internalBitDepth = 8;
+    param.internalBitDepth = 8;
     param.internalCsp = X265_CSP_I420;
-    param.logLevel = X265_LOG_DEBUG;
+    param.logLevel = X265_LOG_INFO;
     param.frameNumThreads=1;
+
     param.rc.rateControlMode= X265_RC_ABR;
     param.rc.bitrate = initial_bitrate * REDUCE_RATIO;
     param.rc.vbvMaxBitrate = param.rc.bitrate;
     param.rc.vbvBufferSize = param.rc.bitrate * vbv_buffer_size;
     param.bframes = 0;
     param.bOpenGOP = 0;
+    param.bAnnexB = 1; // for start code 0,0,0,1
+    param.bRepeatHeaders = 1;
     // param.bConfigRCFrame = 1;
 
     /* Configure non-default params */
@@ -45,6 +48,15 @@ void InitEncodeParam(x265_param &param, int initial_bitrate, int frame_rate, int
     // param.b_vfr_input = 0;
 
     // param.b_cabac = 1;  // 0 for CAVLC， 1 for higher complexity
+
+    /* Configure slices: Attempting 4x4 grid = 16 slices */
+    /* Note: x265 has a hard limit of MAX_NAL_UNITS-1 (typically 15) slices per frame */
+    /* The encoder will automatically clamp maxSlices to this limit */
+    /* Reduce CTU size to get more rows, which allows more slices */
+    /* Default is 64, reducing to 32 gives more CTU rows */
+    param.maxCUSize = 32;
+    param.minCUSize = 8;
+    param.maxSlices = 16;  // Will be clamped to 15 by x265 due to MAX_NAL_UNITS limit
 }
 
 struct BitrateConfig {
@@ -83,14 +95,29 @@ void UpdateBitrateConfig(x265_encoder *encoder, x265_param &param, int bitrate, 
     cout << "Reconfig return: " << ret << endl;
 }
 
-int WriteNALToFile(FILE *file_out, x265_nal *nal, int i_nal) {
+int WriteNALToFile(FILE *file_out, x265_nal *nal, int i_nal, int frame_index) {
     if (i_nal > 0) {
+        cout << "Writing frame " << frame_index << " with " << i_nal << " NAL units." << endl;
         for (int i = 0; i < i_nal; i++) {
-            size_t written = fwrite(nal[i].payload, 1, nal[i].sizeBytes, file_out);
-            if (written != nal[i].sizeBytes) {
-                perror("Failed to write data to file");
-                fclose(file_out);
-                return -1;
+            if (frame_index == 10) {
+              cout << "Drop one byte in frame 10 for testing." << endl;
+              uint32_t first_write_size = nal[i].sizeBytes / 3;
+              size_t written = fwrite(nal[i].payload, 1, first_write_size, file_out);
+              // first_write_size += 1;
+              // written += 1;
+              written += fwrite(nal[i].payload + first_write_size, 1, nal[i].sizeBytes - first_write_size, file_out);
+              if (written != nal[i].sizeBytes) {
+                  perror("Failed to write data to file");
+                  fclose(file_out);
+                  return -1;
+              }
+            } else {
+              size_t written = fwrite(nal[i].payload, 1, nal[i].sizeBytes, file_out);
+              if (written != nal[i].sizeBytes) {
+                  perror("Failed to write data to file");
+                  fclose(file_out);
+                  return -1;
+              }
             }
         }
     } else if (i_nal < 0) {
@@ -262,12 +289,12 @@ void EncodeAndGenerateStatistics(const string &video_name, const string &bitrate
         for (int i = 0; i < i_nal; i++) {
             i_frame_size += nal[i].sizeBytes;
         }
-        if (WriteNALToFile(encoded_file_out, nal, i_nal) < 0) {
+        if (WriteNALToFile(encoded_file_out, nal, i_nal, i_frame) < 0) {
             cout << "WriteNALToFile failed" << endl;
             return;
         }
         cout << "Write frame: " << i_frame + 1 << " nal type: " << nal->type << " size: " << i_frame_size <<
-        " size_kbps: " << i_frame_size * 8 * 30 / 1000 << " kbps" << endl;
+        " size_kbps: " << i_frame_size * 8 * 30 / 1000 << " kbps" << " nal_count: " << i_nal << endl;
 
         auto encode_end = chrono::high_resolution_clock::now();
         auto encode_duration = chrono::duration_cast<chrono::milliseconds>(encode_end - encode_start);
